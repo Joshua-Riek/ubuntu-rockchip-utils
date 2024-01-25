@@ -1,0 +1,93 @@
+#!/bin/bash
+
+set -e
+
+pointer=1
+while [[ ${pointer} -le $# ]]; do
+    if [[ ${!pointer} != "-"* ]]; then 
+        ((pointer++))
+    else
+        param=${!pointer}
+        case ${param} in
+            -f|--force)
+                force="yes"
+                ;;
+            -r|--remove)
+                remove="yes"
+                ;;
+            -h|--help)
+                echo "usage: $0 <kernel-version> [--force | --remove]"
+                exit 0
+                ;;
+        esac
+        if [[ ${pointer} -gt 1 ]]; then
+            set -- "${@:1:((pointer - 1))}" "${@:((pointer + 1)):$#}"
+        else
+            set -- "${@:((pointer + 1)):$#}"
+        fi
+   fi
+done
+
+version=$1
+
+latest_version=$(linux-version list | linux-version sort | tail -1)
+if [ -n "${version}" ] && [ "${remove}" = "yes" ]; then
+    if linux-version compare "${version}" lt "${latest_version}"; then
+        exit 0
+    else
+        if [ -z "${latest_version}" ]; then
+            echo "ubuntu-rockchip: warning: no other kernel packages found, the system might be unbootable"
+            exit 0
+        fi
+    fi
+fi
+
+case "${version}" in
+    "")
+        if [ "$force" = "yes" ]; then
+            echo "ubuntu-rockchip: no kernel specified with --force"
+            exit 1
+        else
+            version="${latest_version}"
+        fi
+        ;;
+    "${latest_version}")
+        ;;
+    *)
+        if [ "${force}" = "yes" ]; then
+            echo "ubuntu-rockchip: forcing install of ${version} instead of ${latest_version}"
+        else
+            echo "ubuntu-rockchip: ignoring old or unknown version ${version} (latest is ${latest_version})"
+            exit 0
+        fi
+        ;;
+esac
+
+if [ ! -e "/boot/vmlinuz-${version}" ]; then
+    echo "ubuntu-rockchip: the file /boot/vmlinuz-${version} does not exist"
+    exit 1
+fi
+
+if [ ! -e "/boot/initrd.img-${version}" ]; then
+    echo "ubuntu-rockchip: the file /boot/initrd.img-${version} does not exist"
+    exit 1
+fi
+
+exit 0
+# Ensure boot partition is mounted
+partition_pkname="$(lsblk -no pkname "$(findmnt -n -o SOURCE /)")"
+partition_char=$(if printf "%s" "${partition_pkname}" | tail -c 1 | grep -q '^[0-9]*$'; then echo p; fi)
+if [ "$(findmnt -M /boot/firmware/ -n -o SOURCE)" != "/dev/${partition_pkname}${partition_char}1" ]; then
+    mkdir -p /boot/firmware/
+    umount -lf /boot/firmware/ 2> /dev/null || true
+    mount "/dev/${partition_pkname}${partition_char}1" /boot/firmware/
+fi
+
+echo "ubuntu-rockchip: flashing kernel ${version}"
+
+rm -rf /boot/firmware/dtbs/
+cp -r /usr/lib/linux-image-${version}/. /boot/firmware/dtbs/
+cp "/boot/initrd.img-${version}" /boot/firmware/initrd.img
+cp "/boot/vmlinuz-${version}" /boot/firmware/vmlinuz
+
+sync
